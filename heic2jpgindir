@@ -1,0 +1,39 @@
+#!/bin/bash
+
+# Default quality to 92 if $1 is unset
+QUALITY=${1:-92}
+MAX_DIM=$2
+
+# Input validation for quality
+if ! [[ "$QUALITY" =~ ^[0-9]+$ ]]; then
+    echo "Error: Quality must be an integer."
+    exit 1
+fi
+
+mkdir -p orig
+shopt -s nocaseglob
+
+for file in *.heic; do
+    [ -f "$file" ] || continue
+
+    filename="${file%.*}"
+    output="${filename}.jpg"
+
+    echo "Processing: $file"
+
+    # Convert HEIF to JPEG
+    heif-convert -q "$QUALITY" "$file" "$output" > /dev/null 2>&1
+
+    # Conditional Resize: Only execute if MAX_DIM is provided and is an integer
+    if [[ -n "$MAX_DIM" ]]; then
+        if [[ "$MAX_DIM" =~ ^[0-9]+$ ]]; then
+            mogrify -resize "${MAX_DIM}x${MAX_DIM}>" "$output"
+        else
+            echo "Warning: Max dimension '$MAX_DIM' is not an integer. Skipping resize."
+        fi
+    fi
+
+    mv "$file" orig/
+done
+
+shopt -u nocaseglob
