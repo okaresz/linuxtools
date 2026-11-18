@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# Transcode MP4 videos for the smallest file size while staying Android-compatible.
+#
+#   Video: HEVC (H.265) Main profile, 8-bit 4:2:0, tagged hvc1, max 1280x720 (HD),
+#          constant 30 fps. HEVC decoding is supported on Android 5.0+.
+#   Audio: AAC-LC mono 48 kbps (universally supported on Android).
+#
+# Usage: video_shrink [--rotate r|l] [input files...]   (default: all *.mp4 in the current dir)
+#        --rotate r   rotate 90 degrees clockwise (right)
+#        --rotate l   rotate 90 degrees counter-clockwise (left)
+# Env:   CRF=27 PRESET=slow OUTDIR=transcoded
+
+set -euo pipefail
+
+CRF="${CRF:-27}"          # higher = smaller/worse; 26-30 is a sensible range
+PRESET="${PRESET:-slow}"  # slower = smaller file at the same quality
+OUTDIR="${OUTDIR:-transcoded}"
+
+command -v ffmpeg >/dev/null || { echo "ffmpeg not found" >&2; exit 1; }
+
+ROTATE_VF=""
+files=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --rotate|--rotate=*)
+            if [ "$1" = --rotate ]; then
+                [ $# -ge 2 ] || { echo "--rotate needs an argument: r or l" >&2; exit 1; }
+                dir="$2"; shift 2
+            else
+                dir="${1#--rotate=}"; shift
+            fi
+            case "$dir" in
+                r) ROTATE_VF="transpose=clock," ;;
+                l) ROTATE_VF="transpose=cclock," ;;
+                *) echo "Invalid --rotate value '$dir' (use r or l)" >&2; exit 1 ;;
+            esac
+            ;;
+        --) shift; files+=("$@"); break ;;
+        -*) echo "Unknown option: $1" >&2; exit 1 ;;
+        *) files+=("$1"); shift ;;
+    esac
+done
+set -- ${files[@]+"${files[@]}"}
+
+if [ $# -eq 0 ]; then
+    shopt -s nullglob
+    set -- *.mp4
+fi
+[ $# -gt 0 ] || { echo "No mp4 files found." >&2; exit 1; }
+
+mkdir -p "$OUTDIR"
+
+for in in "$@"; do
+    out="$OUTDIR/$(basename "${in%.*}").mp4"
+    if [ -e "$out" ]; then
+        echo "Skipping $in (already exists: $out)"
+        continue
+    fi
+    echo "==> $in -> $out"
+
+    # Rotation (if requested) runs first, so the scaling below sees the final orientation.
+    # Fit inside 1280x720 (or 720x1280 for portrait) without upscaling; keep dimensions even.
+    vf="${ROTATE_VF}scale=w='min(iw,if(gt(iw,ih),1280,720))':h='min(ih,if(gt(iw,ih),720,1280))':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=30,format=yuv420p"
+
+    ffmpeg -hide_banner -loglevel warning -stats -nostdin -y -i "$in" \
+        -map 0:v:0 -map '0:a:0?' -map_metadata 0 \
+        -vf "$vf" \
+        -c:v libx265 -preset "$PRESET" -crf "$CRF" -profile:v main -tag:v hvc1 \
+        -x265-params "log-level=error" \
+        -c:a aac -b:a 48k -ac 1 -ar 44100 \
+        -movflags +faststart \
+        "$out.part.mp4"
+    mv "$out.part.mp4" "$out"
+
+    printf '    %s -> %s\n' "$(du -h "$in" | cut -f1)" "$(du -h "$out" | cut -f1)"
+done
